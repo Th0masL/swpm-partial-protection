@@ -136,6 +136,36 @@ class SwpmPartialProtection {
                 $protected_msg = SwpmUtils::_("Your membership level does not have permission to view this content.");
                 return $this->show_restricted_msg($protected_msg, $attrs);
             }
+
+            // If WordPress Affiliates Manager is installed, we verify the 'visible_to' parameters that starts with 'wpam_', if any
+            if (class_exists('WPAM_Pages_AffiliatesHome') && !empty($attrs['visible_to']) && strpos($attrs['visible_to'], 'wpam_') !== false) {
+
+                // Get the email of this user
+                $member_email = $auth->get('email');
+
+                // Query the DB table 'wpam_affiliates' to get the status of the WPAM account of this user
+                global $wpdb;
+                $results = $wpdb->get_results( "SELECT status FROM {$wpdb->prefix}wpam_affiliates WHERE email = '".$member_email."'", OBJECT );
+
+                // Save the user's WPAM account status in a variable, and set to 'unregistered' if the user doesn't have an WPAM account yet
+                $wpam_account_status = !empty($results[0]->status) ? $results[0]->status : 'unregistered';
+
+                // Append 'wpam_' in front of the account status, so we can match it with the values of the 'visible_to' filter
+                $wpam_account_status = "wpam_".$wpam_account_status;
+
+                // If the filter 'visible_to' contains 'wpam_registered' and if the user has an WPAM account, then we show the content (no matter what is the account status)
+                if (in_array("wpam_registered", explode('-', $attrs['visible_to'])) && $wpam_account_status != "wpam_unregistered") {
+                	return $contents;
+                }
+
+                // For any other 'visible_to' values, we show the content only if the WPAM account status match the 'visible_to' filter
+                if (in_array($wpam_account_status, explode('-', $attrs['visible_to']))) {
+                	return $contents;
+                }
+
+                // And if the WPAM account status does not match any of the values in the 'visible_to' filter, then we do not show the content
+                return '';
+            }
             return $contents;
         }
 
