@@ -50,6 +50,18 @@ class SwpmPartialProtection {
         return '';
     }
 
+    // Function that extract the elements that match a specific string, from an array
+    public function array_search_x( $array, $search ) {
+        $result = array();
+        foreach( $array as $item ){
+            if (strpos($item, $search) !== false) { // if the element match the search, save this element
+                array_push($result, $item);
+            }
+        }
+        if (!empty($result)) { return $result; }
+        else { return false; }
+    }
+
     public function protect($attrs, $contents, $codes = '') {
         global $post;
         $auth = SwpmAuth::get_instance();
@@ -74,6 +86,113 @@ class SwpmPartialProtection {
             // Show the content to anyone who is not logged in
             if ($attrs['visible_to'] == "not_logged_in_users_only") {
                 return $contents;
+            }
+
+            // If the Newsletter plugin is installed, we verify the 'visible_to' parameters that contains 'newsletter_subscriber', if any
+            if (class_exists('Newsletter') && !empty($attrs['visible_to']) && strpos($attrs['visible_to'], 'newsletter_subscriber') !== false) {
+
+                // We need at least either the email or the nk GET parameter to be able to test for the Newsletter plugin
+                if (isset($_GET['email']) || isset($_GET['nk'])) {
+
+                    // Explode the visible_to value in an array, so we can get the name of the Newsletter Filter
+                    $visible_to_array = explode("-", $attrs['visible_to']);
+
+                    foreach ($visible_to_array as $filter_name) {
+                        if (strpos($filter_name, 'newsletter_subscriber') !== false) {
+
+                            // Init some vars
+                            $mysql_list_when = "";
+                            $filter = "";
+                            $filter_value = "";
+                            $filter_type = "";
+                            $list_number = "";
+
+                            // If we want to filter with a List, we extract the list number
+                            if (strpos($filter_name, 'newsletter_subscriber_in_list_') !== false) {
+                                // Set the type of filter
+                                if (strpos($filter_name, 'newsletter_subscriber_not_in_list_') !== false) {
+                                    $filter_type = "not_in_list";
+                                    // Extract the number of the Newsletter List we want to filter with
+                                    $list_number = str_replace("newsletter_subscriber_not_in_list_", "", $filter_name);
+                                }
+                                else {
+                                    $filter_type = "in_list";
+                                    // Extract the number of the Newsletter List we want to filter with
+                                    $list_number = str_replace("newsletter_subscriber_in_list_", "", $filter_name);
+                                }
+
+                                // If we found a valid Newsletter Subscriber List Number we keept it
+                                if (!is_numeric($list_number)) {
+                                    $list_number = "";
+                                }
+                                else { // If we found a valid list number, reduce by 1 because the arrays starts by 0
+                                    $list_number = (int)$list_number - 1;
+                                }
+                            } // And we detect the filter type
+                            else if ($filter_name == 'newsletter_subscriber_in_no_list') {
+                                $filter_type = "in_no_list";
+                            }
+                            else if ($filter_name == 'newsletter_subscriber') {
+                                $filter_type = "subscriber";
+                            }
+                            else if ($filter_name == 'not_newsletter_subscriber') {
+                                $filter_type = "not_subscriber";
+                            }
+
+                            if (isset($_GET['email'])) {
+                                $filter = "email";
+                                $filter_value = filter_input( INPUT_GET, 'email', FILTER_SANITIZE_EMAIL );
+                            }
+                            else if (isset($_GET['nk'])) {
+                                $filter = "token";
+                                $nk = filter_input( INPUT_GET, 'nk', FILTER_SANITIZE_STRING );
+                                $array_nk = explode ("-", $nk);
+                                $filter_value = $array_nk[1];
+                            }
+
+                            // If we found some correct values to search with, we run the MYSQL Query against the Newsletter database
+                            if (!empty($filter_type) && !empty($filter) && !empty($filter_value)) {
+                                global $wpdb;
+                                $results = $wpdb->get_results("SELECT name,email,token,status,CONCAT_WS('-',list_1,list_2,list_3,list_4,list_5,list_6,list_7,list_8,list_9,list_10) as lists FROM {$wpdb->prefix}newsletter WHERE ".$filter." = '".$filter_value."'", OBJECT );
+
+                                unset($array_lists);
+                                $array_list = array();
+                                $at_least_in_one_list = false;
+
+                                // If we got some results, detect if the user is at least in some lists or not
+                                if (!empty($results) && isset($results[0]->lists)) {
+                                    $in_lists = $results[0]->lists;
+
+                                    // Explode the lists into an array, so we can easily search
+                                    $array_lists = explode("-", $in_lists);
+
+                                    // Check the value is not empty, that means that the user is at least in one list
+                                    if (!empty(str_replace("0", "", implode("", $array_lists)))) {
+                                        $at_least_in_one_list = true;
+                                    }
+                                }
+
+                                // We show the content if the result of the mysql query is not null and if 
+                                // we want to show to subscribers
+                                // or to members that are in a specific list
+                                // or to members that are not in a specific list
+                                // or to members that are not in any list at all
+                                if ($filter_type == "subscriber" || ($filter_type == "in_list" && !empty($array_lists[$list_number])) || ($filter_type == "not_in_list" && empty($array_lists[$list_number])) || ($filter_type == "in_no_list" && $at_least_in_one_list == false)) {
+                                    if (!empty($results[0]->status)) {
+                                        return $contents;
+                                    }
+                                }
+                                // Else if we want to show only to Non-Subscriber, we show it if the result of the mysql query is null
+                                else if ($filter_type == "not_subscriber") {
+                                    if (empty($results[0]->status)) {
+                                        return $contents;
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                }
             }
         }
         if ($auth->is_logged_in()) {
@@ -155,12 +274,12 @@ class SwpmPartialProtection {
 
                 // If the filter 'visible_to' contains 'wpam_registered' and if the user has an WPAM account, then we show the content (no matter what is the account status)
                 if (in_array("wpam_registered", explode('-', $attrs['visible_to'])) && $wpam_account_status != "wpam_unregistered") {
-                	return $contents;
+                    return $contents;
                 }
 
                 // For any other 'visible_to' values, we show the content only if the WPAM account status match the 'visible_to' filter
                 if (in_array($wpam_account_status, explode('-', $attrs['visible_to']))) {
-                	return $contents;
+                    return $contents;
                 }
 
                 // And if the WPAM account status does not match any of the values in the 'visible_to' filter, then we do not show the content
